@@ -50,9 +50,14 @@ services:
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
     ports:
       - "3000:3000"
+    volumes:
+      - ./interview-webapp:/app
+      - /app/node_modules
+      - /app/.next
     depends_on:
       - api
     restart: unless-stopped
+    command: npm run dev
 
 volumes:
   postgres_data:

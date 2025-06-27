@@ -76,36 +76,6 @@ export default function AgentsPage() {
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="container mx-auto px-4">
-        {/* Active Interviews Section */}
-        {activeSessions.length > 0 && (
-          <div className="max-w-6xl mx-auto mb-8">
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
-              <h2 className="text-xl font-semibold text-yellow-800 mb-4">
-                🔄 Resume Active Interviews
-              </h2>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {activeSessions.map((session) => (
-                  <div key={session.session_id} className="bg-white rounded-md p-4 border border-yellow-200">
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-medium text-gray-800">{session.participant_name}</h3>
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(session.status)}`}>
-                        {session.status}
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-600 mb-2">Progress: {session.progress}</p>
-                    <p className="text-xs text-gray-500 mb-3">Started: {formatDate(session.created_at)}</p>
-                    <button
-                      onClick={() => handleResumeInterview(session.session_id)}
-                      className="w-full bg-yellow-600 text-white py-2 px-3 rounded text-sm hover:bg-yellow-700 transition-colors"
-                    >
-                      Resume Interview
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Interview Sessions Section */}
         <div className="max-w-6xl mx-auto mb-8">
