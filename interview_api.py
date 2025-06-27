@@ -463,35 +463,33 @@ async def delete_interview_session(session_id: str, db: Session = Depends(get_db
     return {"message": "Interview session deleted successfully"}
 
 @app.get("/agents/{agent_id}")
-async def get_agent_details(agent_id: str):
+async def get_agent_details(agent_id: str, db: Session = Depends(get_db)):
     """
-    Get details about a specific agent
+    Get details about a specific agent from database
     """
-    agent_path = f"agent_bank/interview_agents/{agent_id}"
+    # Get agent from database
+    db_agent = db.query(DBAgent).filter(DBAgent.agent_id == agent_id).first()
     
-    if not os.path.exists(agent_path):
+    if not db_agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
     try:
-        # Try to read the interview data
-        interview_data_path = os.path.join(agent_path, "interview_data.json")
-        if os.path.exists(interview_data_path):
-            with open(interview_data_path, 'r') as f:
-                interview_data = json.load(f)
-            
-            return {
-                "agent_id": agent_id,
-                "name": f"{interview_data['participant']['first_name']} {interview_data['participant']['last_name']}",
-                "age": interview_data['participant'].get('age', 'Unknown'),
-                "created_date": interview_data.get('completion_date', interview_data.get('interview_date', 'Unknown')),
-                "total_responses": len(interview_data.get('responses', [])),
-                "agent_path": agent_path,
-                "session_id": interview_data.get('session_id', 'Unknown'),
-                "participant": interview_data.get('participant', {}),
-                "status": interview_data.get('status', 'Unknown')
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Agent data not found")
+        # Get related interview session
+        session = db_agent.interview_session
+        
+        return {
+            "agent_id": agent_id,
+            "name": db_agent.name,
+            "age": db_agent.age,
+            "created_date": db_agent.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "total_responses": len(session.responses_data) if session else 0,
+            "agent_path": session.agent_path if session else "",
+            "session_id": db_agent.session_id,
+            "participant": db_agent.participant_data,
+            "status": session.status if session else "unknown",
+            "memory_nodes": len(db_agent.memory_stream.get('nodes', [])),
+            "scratch_data": db_agent.scratch_data
+        }
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading agent: {str(e)}")
