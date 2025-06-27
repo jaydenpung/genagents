@@ -135,8 +135,7 @@ async def start_interview(request: StartInterviewRequest, db: Session = Depends(
         save_dir = f"agent_bank/interview_agents/interview_{participant['first_name'].lower()}_{participant['last_name'].lower()}_{timestamp}"
         os.makedirs(save_dir, exist_ok=True)
         
-        # Save initial agent
-        agent.save(save_dir)
+        # Agent will be saved to database when finalized
         
         # Create database session record
         db_session = DBInterviewSession(
@@ -263,20 +262,7 @@ async def submit_response(request: SubmitResponseRequest, db: Session = Depends(
             # Add the response as a memory
             agent.remember(response_text, time_step=len(responses))
             
-            # Save the updated agent
-            agent.save(session.agent_path)
-            
-            # Save the updated interview data
-            interview_file = os.path.join(session.agent_path, "interview_data.json")
-            with open(interview_file, 'w') as f:
-                json.dump({
-                    "session_id": request.session_id,
-                    "participant": session.participant_data,
-                    "interview_date": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "responses": responses,
-                    "status": session.status
-                }, f, indent=2)
+            # Agent updates are stored in memory until finalization
                 
         except Exception as e:
             # Log the error but don't fail the response submission
@@ -289,20 +275,7 @@ async def submit_response(request: SubmitResponseRequest, db: Session = Depends(
     if session.current_question_index >= len(questions):
         session.status = "completed"
         
-        # Save final interview data
-        try:
-            interview_file = os.path.join(session.agent_path, "interview_data.json")
-            with open(interview_file, 'w') as f:
-                json.dump({
-                    "session_id": request.session_id,
-                    "participant": session.participant_data,
-                    "interview_date": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                    "completion_date": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "responses": session.responses_data,
-                    "status": "completed"
-                }, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Failed to save final interview data: {str(e)}")
+        # All interview data is now stored in the database
     
     # Save changes to database
     db.commit()
@@ -361,8 +334,7 @@ async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)
         session.status = "agent_created"
         db.commit()
         
-        # Also save to file for backup
-        agent.save(agent_path)
+        # Agent is now stored in database only
         
         return AgentCreationResponse(
             session_id=session_id,
