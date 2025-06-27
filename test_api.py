@@ -90,6 +90,6 @@ if __name__ == "__main__":
         test_interview_api()
     except requests.exceptions.ConnectionError:
         print("Error: Cannot connect to API. Make sure the server is running.")
-        print("Start the server with: python interview_api.py")
+        print("Start the server with: python start.py or python interview_api_refactored.py")
     except Exception as e:
         print(f"Error: {e}")

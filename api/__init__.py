@@ -1,3 +1,3 @@
 """
-API package for Generative Agent Interview System
-""" 
+API module for generative agents interview system
+"""

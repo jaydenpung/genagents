@@ -1,22 +1,21 @@
-from fastapi import APIRouter, HTTPException, Depends
+"""
+Interview start endpoint
+"""
+
+from fastapi import HTTPException, Depends
 from sqlalchemy.orm import Session
 import json
 import time
 import os
 import uuid
-import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from genagents.genagents import GenerativeAgent
 from database import get_db, InterviewSession as DBInterviewSession
+from genagents.genagents import GenerativeAgent
 from api.models import StartInterviewRequest, QuestionResponse
 
-router = APIRouter(prefix="/interview", tags=["interview"])
+# Import shared state
+from api.shared_state import loaded_agents
 
-# In-memory storage for loaded agents
-loaded_agents = {}
-
-@router.post("/start", response_model=QuestionResponse)
 async def start_interview(request: StartInterviewRequest, db: Session = Depends(get_db)):
     """
     Start a new interview session
@@ -24,9 +23,11 @@ async def start_interview(request: StartInterviewRequest, db: Session = Depends(
     # Generate unique session ID
     session_id = str(uuid.uuid4())
     
-    # Load interview questions
+    # Load interview questions (use short version if debug mode)
     try:
-        with open('interview_questions.json', 'r') as f:
+        debug_mode = os.getenv('DEBUG', 'false').lower() in ['true', '1', 'yes']
+        questions_file = 'interview_questions_short.json' if debug_mode else 'interview_questions.json'
+        with open(questions_file, 'r') as f:
             interview_data = json.load(f)
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Interview questions file not found")
@@ -54,6 +55,8 @@ async def start_interview(request: StartInterviewRequest, db: Session = Depends(
         timestamp = int(time.time())
         save_dir = f"agent_bank/interview_agents/interview_{participant['first_name'].lower()}_{participant['last_name'].lower()}_{timestamp}"
         os.makedirs(save_dir, exist_ok=True)
+        
+        # Agent will be saved to database when finalized
         
         # Create database session record
         db_session = DBInterviewSession(
@@ -87,4 +90,4 @@ async def start_interview(request: StartInterviewRequest, db: Session = Depends(
         question=question_text,
         time_limit=first_question['timeLimit'],
         is_introduction=True
-    ) 
+    )

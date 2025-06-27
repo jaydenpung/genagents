@@ -1,9 +1,10 @@
 """
-Pydantic models for the API
+Shared Pydantic models for the API
 """
 
+from __future__ import annotations
 from pydantic import BaseModel
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 class StartInterviewRequest(BaseModel):
     first_name: str
@@ -48,4 +49,4 @@ class ChatResponse(BaseModel):
     agent_id: str
     agent_name: str
     response: str
-    timestamp: str 
+    timestamp: str
