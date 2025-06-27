@@ -345,7 +345,6 @@ async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)
         agent_id = str(uuid.uuid4())
         db_agent = DBAgent(
             agent_id=agent_id,
-            session_id=session_id,
             name=f"{session.participant_data['first_name']} {session.participant_data['last_name']}",
             age=session.participant_data.get('age', 'Unknown'),
             participant_data=session.participant_data,
@@ -428,17 +427,12 @@ async def list_created_agents(db: Session = Depends(get_db)):
         
         agents = []
         for agent in db_agents:
-            # Get related interview session for response count
-            session = agent.interview_session
-            
             agents.append({
                 "agent_id": agent.agent_id,
                 "name": agent.name,
                 "age": agent.age,
                 "created_date": agent.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                "total_responses": len(session.responses_data) if session else 0,
-                "agent_path": session.agent_path if session else "",
-                "session_id": agent.session_id
+                "memory_nodes": len(agent.memory_stream.get('nodes', []))
             })
         
         # Sort by creation date (newest first)
@@ -474,19 +468,12 @@ async def get_agent_details(agent_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Agent not found")
     
     try:
-        # Get related interview session
-        session = db_agent.interview_session
-        
         return {
             "agent_id": agent_id,
             "name": db_agent.name,
             "age": db_agent.age,
             "created_date": db_agent.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "total_responses": len(session.responses_data) if session else 0,
-            "agent_path": session.agent_path if session else "",
-            "session_id": db_agent.session_id,
             "participant": db_agent.participant_data,
-            "status": session.status if session else "unknown",
             "memory_nodes": len(db_agent.memory_stream.get('nodes', [])),
             "scratch_data": db_agent.scratch_data
         }

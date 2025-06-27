@@ -23,14 +23,10 @@ class InterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # Relationship to agent
-    agent = relationship("Agent", back_populates="interview_session", uselist=False)
-
 class Agent(Base):
     __tablename__ = "agents"
     
     agent_id = Column(String, primary_key=True)
-    session_id = Column(String, ForeignKey('interview_sessions.session_id'), unique=True)
     name = Column(String, nullable=False)
     age = Column(String)
     participant_data = Column(JSON)  # Full participant info
@@ -38,9 +34,6 @@ class Agent(Base):
     scratch_data = Column(JSON)      # Agent's scratch/state data
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationship to interview session
-    interview_session = relationship("InterviewSession", back_populates="agent")
 
 # Database connection
 engine = None
