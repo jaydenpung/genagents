@@ -15,7 +15,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from genagents.genagents import GenerativeAgent
-from database import init_database, get_db, InterviewSession as DBInterviewSession, get_db_session
+from database import init_database, get_db, InterviewSession as DBInterviewSession, Agent as DBAgent, get_db_session
 
 app = FastAPI(title="Generative Agent Interview API", version="1.0.0")
 
@@ -341,11 +341,28 @@ async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)
         
         agent_path = session.agent_path
         
+        # Create agent in database
+        agent_id = str(uuid.uuid4())
+        db_agent = DBAgent(
+            agent_id=agent_id,
+            session_id=session_id,
+            name=f"{session.participant_data['first_name']} {session.participant_data['last_name']}",
+            age=session.participant_data.get('age', 'Unknown'),
+            participant_data=session.participant_data,
+            memory_stream={
+                "embeddings": agent.memory_stream.embeddings,
+                "nodes": [node.package() for node in agent.memory_stream.seq_nodes]
+            },
+            scratch_data=agent.scratch
+        )
+        
+        db.add(db_agent)
+        
         # Update session status
         session.status = "agent_created"
         db.commit()
         
-        # Save final agent state
+        # Also save to file for backup
         agent.save(agent_path)
         
         return AgentCreationResponse(
@@ -401,54 +418,28 @@ async def list_interview_sessions(db: Session = Depends(get_db)):
     return {"sessions": sessions_summary}
 
 @app.get("/agents")
-async def list_created_agents():
+async def list_created_agents(db: Session = Depends(get_db)):
     """
-    List all created agents from the agent_bank
+    List all created agents from the database
     """
-    agents = []
-    agent_bank_path = "agent_bank/interview_agents"
-    
-    if not os.path.exists(agent_bank_path):
-        return {"agents": []}
-    
     try:
-        for agent_dir in os.listdir(agent_bank_path):
-            agent_path = os.path.join(agent_bank_path, agent_dir)
-            if os.path.isdir(agent_path):
-                # Try to read the interview data
-                interview_data_path = os.path.join(agent_path, "interview_data.json")
-                if os.path.exists(interview_data_path):
-                    try:
-                        with open(interview_data_path, 'r') as f:
-                            interview_data = json.load(f)
-                        
-                        # Get agent metadata
-                        meta_path = os.path.join(agent_path, "meta.json")
-                        agent_meta = {}
-                        if os.path.exists(meta_path):
-                            with open(meta_path, 'r') as f:
-                                agent_meta = json.load(f)
-                        
-                        agents.append({
-                            "agent_id": agent_dir,
-                            "name": f"{interview_data['participant']['first_name']} {interview_data['participant']['last_name']}",
-                            "age": interview_data['participant'].get('age', 'Unknown'),
-                            "created_date": interview_data.get('completion_date', interview_data.get('interview_date', 'Unknown')),
-                            "total_responses": len(interview_data.get('responses', [])),
-                            "agent_path": agent_path,
-                            "session_id": interview_data.get('session_id', 'Unknown')
-                        })
-                    except (json.JSONDecodeError, KeyError) as e:
-                        # If we can't read the data, create a basic entry
-                        agents.append({
-                            "agent_id": agent_dir,
-                            "name": agent_dir.replace('_', ' ').title(),
-                            "age": "Unknown",
-                            "created_date": "Unknown",
-                            "total_responses": 0,
-                            "agent_path": agent_path,
-                            "session_id": "Unknown"
-                        })
+        # Query agents from database
+        db_agents = db.query(DBAgent).all()
+        
+        agents = []
+        for agent in db_agents:
+            # Get related interview session for response count
+            session = agent.interview_session
+            
+            agents.append({
+                "agent_id": agent.agent_id,
+                "name": agent.name,
+                "age": agent.age,
+                "created_date": agent.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "total_responses": len(session.responses_data) if session else 0,
+                "agent_path": session.agent_path if session else "",
+                "session_id": agent.session_id
+            })
         
         # Sort by creation date (newest first)
         agents.sort(key=lambda x: x['created_date'], reverse=True)
@@ -506,31 +497,46 @@ async def get_agent_details(agent_id: str):
         raise HTTPException(status_code=500, detail=f"Error loading agent: {str(e)}")
 
 @app.post("/agents/{agent_id}/chat", response_model=ChatResponse)
-async def chat_with_agent(agent_id: str, request: ChatRequest):
+async def chat_with_agent(agent_id: str, request: ChatRequest, db: Session = Depends(get_db)):
     """
     Send a message to an agent and get a response
     """
-    agent_path = f"agent_bank/interview_agents/{agent_id}"
+    # Get agent from database
+    db_agent = db.query(DBAgent).filter(DBAgent.agent_id == agent_id).first()
     
-    if not os.path.exists(agent_path):
+    if not db_agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     
     try:
-        # Load or get the agent
+        # Load or reconstruct the agent
         if agent_id not in loaded_agents:
-            # Load the agent from disk by passing the folder path to constructor
-            agent = GenerativeAgent(agent_path)
+            # Reconstruct agent from database
+            agent = GenerativeAgent()
+            agent.scratch = db_agent.scratch_data
+            
+            # Reconstruct memory stream
+            memory_data = db_agent.memory_stream
+            if memory_data and 'nodes' in memory_data and 'embeddings' in memory_data:
+                # Create nodes from stored data
+                nodes = []
+                for node_data in memory_data['nodes']:
+                    # Create a simple object to hold node data
+                    class MemoryNode:
+                        def __init__(self, data):
+                            self.data = data
+                        def package(self):
+                            return self.data
+                    nodes.append(MemoryNode(node_data))
+                
+                agent.memory_stream.seq_nodes = nodes
+                agent.memory_stream.embeddings = memory_data['embeddings']
+            
             loaded_agents[agent_id] = agent
         else:
             agent = loaded_agents[agent_id]
         
         # Get agent name
-        interview_data_path = os.path.join(agent_path, "interview_data.json")
-        agent_name = "Agent"
-        if os.path.exists(interview_data_path):
-            with open(interview_data_path, 'r') as f:
-                interview_data = json.load(f)
-                agent_name = f"{interview_data['participant']['first_name']} {interview_data['participant']['last_name']}"
+        agent_name = db_agent.name
         
         # Get or initialize conversation history for this agent
         if agent_id not in conversation_histories:

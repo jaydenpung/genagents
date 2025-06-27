@@ -1,10 +1,10 @@
 """
-Database models and connection for interview sessions
+Database models and connection for interview sessions and agents
 """
 
-from sqlalchemy import create_engine, Column, String, Text, Integer, DateTime, JSON
+from sqlalchemy import create_engine, Column, String, Text, Integer, DateTime, JSON, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 from simulation_engine.settings import DATABASE_URL
 
@@ -22,6 +22,25 @@ class InterviewSession(Base):
     agent_path = Column(String)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship to agent
+    agent = relationship("Agent", back_populates="interview_session", uselist=False)
+
+class Agent(Base):
+    __tablename__ = "agents"
+    
+    agent_id = Column(String, primary_key=True)
+    session_id = Column(String, ForeignKey('interview_sessions.session_id'), unique=True)
+    name = Column(String, nullable=False)
+    age = Column(String)
+    participant_data = Column(JSON)  # Full participant info
+    memory_stream = Column(JSON)     # Agent's memory stream data
+    scratch_data = Column(JSON)      # Agent's scratch/state data
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship to interview session
+    interview_session = relationship("InterviewSession", back_populates="agent")
 
 # Database connection
 engine = None
