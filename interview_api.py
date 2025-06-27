@@ -515,18 +515,31 @@ async def chat_with_agent(agent_id: str, request: ChatRequest, db: Session = Dep
             # Reconstruct memory stream
             memory_data = db_agent.memory_stream
             if memory_data and 'nodes' in memory_data and 'embeddings' in memory_data:
-                # Create nodes from stored data
+                # Import the proper ConceptNode class
+                from genagents.modules.memory_stream import ConceptNode
+                
+                # Create proper ConceptNode objects from stored data
                 nodes = []
+                id_to_node = {}
+                
                 for node_data in memory_data['nodes']:
-                    # Create a simple object to hold node data
-                    class MemoryNode:
-                        def __init__(self, data):
-                            self.data = data
-                        def package(self):
-                            return self.data
-                    nodes.append(MemoryNode(node_data))
+                    # Ensure all required fields exist with defaults
+                    node_dict = {
+                        "node_id": node_data.get("node_id", 0),
+                        "node_type": node_data.get("node_type", "observation"),
+                        "content": node_data.get("content", ""),
+                        "importance": node_data.get("importance", 0),
+                        "created": node_data.get("created", 0),
+                        "last_retrieved": node_data.get("last_retrieved", 0),
+                        "pointer_id": node_data.get("pointer_id", None)
+                    }
+                    node = ConceptNode(node_dict)
+                    nodes.append(node)
+                    # Build the id_to_node mapping
+                    id_to_node[node.node_id] = node
                 
                 agent.memory_stream.seq_nodes = nodes
+                agent.memory_stream.id_to_node = id_to_node
                 agent.memory_stream.embeddings = memory_data['embeddings']
             
             loaded_agents[agent_id] = agent
@@ -557,6 +570,9 @@ async def chat_with_agent(agent_id: str, request: ChatRequest, db: Session = Dep
                 conversation_histories[agent_id].append([agent_name, response])
         except Exception as e:
             print(f"Error generating utterance: {str(e)}")
+            print(f"Error type: {type(e)}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             # Another fallback
             response = f"I understand you said: '{request.message}'. Let me think about that based on my experiences..."
             conversation_histories[agent_id].append([agent_name, response])
