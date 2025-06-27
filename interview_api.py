@@ -10,6 +10,9 @@ import json
 import time
 import os
 import uuid
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from genagents.genagents import GenerativeAgent
 
 app = FastAPI(title="Generative Agent Interview API", version="1.0.0")
