@@ -431,8 +431,9 @@ async def delete_interview_session(session_id: str):
     del interview_sessions[session_id]
     return {"message": "Interview session deleted successfully"}
 
-# In-memory storage for loaded agents (for chat sessions)
+# In-memory storage for loaded agents and conversation histories
 loaded_agents: Dict[str, GenerativeAgent] = {}
+conversation_histories: Dict[str, List[List[str]]] = {}
 
 @app.get("/agents/{agent_id}")
 async def get_agent_details(agent_id: str):
@@ -481,9 +482,8 @@ async def chat_with_agent(agent_id: str, request: ChatRequest):
     try:
         # Load or get the agent
         if agent_id not in loaded_agents:
-            # Load the agent from disk
-            agent = GenerativeAgent()
-            agent.load(agent_path)
+            # Load the agent from disk by passing the folder path to constructor
+            agent = GenerativeAgent(agent_path)
             loaded_agents[agent_id] = agent
         else:
             agent = loaded_agents[agent_id]
@@ -496,16 +496,30 @@ async def chat_with_agent(agent_id: str, request: ChatRequest):
                 interview_data = json.load(f)
                 agent_name = f"{interview_data['participant']['first_name']} {interview_data['participant']['last_name']}"
         
-        # Generate response from agent
-        # Note: This is a simplified response. You might want to use a more sophisticated method
-        # from the GenerativeAgent class for better conversation handling
-        if hasattr(agent, 'generate_reaction') and callable(getattr(agent, 'generate_reaction')):
-            response = agent.generate_reaction(request.message)
-        elif hasattr(agent, 'chat') and callable(getattr(agent, 'chat')):
-            response = agent.chat(request.message)
-        else:
-            # Fallback: create a simple response based on agent's memories
-            response = f"As {agent_name}, I remember my experiences from the interview. You said: '{request.message}'. Based on what I shared during my interview, I think..."
+        # Get or initialize conversation history for this agent
+        if agent_id not in conversation_histories:
+            conversation_histories[agent_id] = []
+        
+        # Add user message to conversation history
+        conversation_histories[agent_id].append(["User", request.message])
+        
+        # Generate response from agent using the full conversation history
+        try:
+            if hasattr(agent, 'utterance') and callable(getattr(agent, 'utterance')):
+                # Use the conversation history as done in main.py
+                response = agent.utterance(conversation_histories[agent_id])
+                
+                # Add agent's response to conversation history
+                conversation_histories[agent_id].append([agent.get_fullname(), response])
+            else:
+                # Fallback: create a simple response based on agent's memories
+                response = f"As {agent_name}, I remember my experiences from the interview. You said: '{request.message}'. Based on what I shared during my interview, I think..."
+                conversation_histories[agent_id].append([agent_name, response])
+        except Exception as e:
+            print(f"Error generating utterance: {str(e)}")
+            # Another fallback
+            response = f"I understand you said: '{request.message}'. Let me think about that based on my experiences..."
+            conversation_histories[agent_id].append([agent_name, response])
         
         return ChatResponse(
             agent_id=agent_id,
@@ -516,6 +530,15 @@ async def chat_with_agent(agent_id: str, request: ChatRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error chatting with agent: {str(e)}")
+
+@app.delete("/agents/{agent_id}/chat")
+async def clear_conversation_history(agent_id: str):
+    """
+    Clear the conversation history for an agent
+    """
+    if agent_id in conversation_histories:
+        del conversation_histories[agent_id]
+    return {"message": "Conversation history cleared"}
 
 if __name__ == "__main__":
     import uvicorn
