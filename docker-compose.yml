@@ -26,15 +26,19 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DEBUG=${DEBUG:-false}
     ports:
       - "8000:8000"
     volumes:
+      - .:/app
       - ./agent_bank:/app/agent_bank
       - ./interview_questions.json:/app/interview_questions.json
+      - ./interview_questions_short.json:/app/interview_questions_short.json
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    command: uvicorn interview_api:app --host 0.0.0.0 --port 8000 --reload
 
   # Next.js Frontend
   frontend:

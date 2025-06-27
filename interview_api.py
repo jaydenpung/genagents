@@ -114,9 +114,11 @@ async def start_interview(request: StartInterviewRequest, db: Session = Depends(
     # Generate unique session ID
     session_id = str(uuid.uuid4())
     
-    # Load interview questions
+    # Load interview questions (use short version if debug mode)
     try:
-        with open('interview_questions.json', 'r') as f:
+        debug_mode = os.getenv('DEBUG', 'false').lower() in ['true', '1', 'yes']
+        questions_file = 'interview_questions_short.json' if debug_mode else 'interview_questions.json'
+        with open(questions_file, 'r') as f:
             interview_data = json.load(f)
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="Interview questions file not found")
@@ -315,13 +317,33 @@ async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)
         raise HTTPException(status_code=400, detail="Interview must be completed before finalizing agent")
     
     try:
-        # Load or get agent from memory
-        agent = None
-        if session_id in loaded_agents:
-            agent = loaded_agents[session_id]
-        else:
-            agent = GenerativeAgent(session.agent_path)
+        # Get agent from memory (it should always be there after interview)
+        if session_id not in loaded_agents:
+            print(f"Agent not in memory for session {session_id}, creating new one...")
+            # If agent is not in memory, create a new one with interview responses
+            agent = GenerativeAgent()
+            print(f"Created agent, has memory_stream: {hasattr(agent, 'memory_stream')}")
+            
+            # Set up basic information
+            participant = session.participant_data
+            agent.update_scratch({
+                "first_name": participant["first_name"],
+                "last_name": participant["last_name"],
+                "age": participant["age"],
+                **{k: v for k, v in participant.items() if k not in ["first_name", "last_name", "age"]}
+            })
+            
+            # Add interview responses as memories
+            responses = session.responses_data if session.responses_data is not None else []
+            print(f"Adding {len(responses)} responses as memories...")
+            for i, response in enumerate(responses):
+                if response.get("response") and response["response"].strip():
+                    agent.remember(response["response"].strip(), time_step=i)
+            
+            loaded_agents[session_id] = agent
         
+        agent = loaded_agents[session_id]
+        print(f"Using agent, has memory_stream: {hasattr(agent, 'memory_stream')}")
         agent_path = session.agent_path
         
         # Create agent in database
