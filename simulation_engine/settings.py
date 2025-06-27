@@ -7,6 +7,9 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 KEY_OWNER = "test"
 
+# Database Configuration
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 DEBUG = False
 
 MAX_CHUNK_SIZE = 4

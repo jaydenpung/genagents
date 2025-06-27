@@ -2,10 +2,11 @@
 Web API for conducting interviews to create generative agents
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, List
+from sqlalchemy.orm import Session
 import json
 import time
 import os
@@ -14,6 +15,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from genagents.genagents import GenerativeAgent
+from database import init_database, get_db, InterviewSession as DBInterviewSession, get_db_session
 
 app = FastAPI(title="Generative Agent Interview API", version="1.0.0")
 
@@ -26,8 +28,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory storage for interview sessions
-interview_sessions: Dict[str, dict] = {}
+# Initialize database on startup
+init_database()
+
+# In-memory storage for loaded agents and conversation histories (keep these)
+loaded_agents: Dict[str, GenerativeAgent] = {}
+conversation_histories: Dict[str, List[List[str]]] = {}
 
 class StartInterviewRequest(BaseModel):
     first_name: str
@@ -91,7 +97,7 @@ async def root():
     }
 
 @app.post("/interview/start", response_model=QuestionResponse)
-async def start_interview(request: StartInterviewRequest):
+async def start_interview(request: StartInterviewRequest, db: Session = Depends(get_db)):
     """
     Start a new interview session
     """
@@ -132,22 +138,25 @@ async def start_interview(request: StartInterviewRequest):
         # Save initial agent
         agent.save(save_dir)
         
-        # Create session with agent info
-        session = {
-            "session_id": session_id,
-            "participant": participant,
-            "questions": interview_data,
-            "current_question_index": 0,
-            "responses": [],
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "status": "active",
-            "agent_path": save_dir,
-            "agent": agent
-        }
+        # Create database session record
+        db_session = DBInterviewSession(
+            session_id=session_id,
+            participant_data=participant,
+            questions_data=interview_data,
+            responses_data=[],
+            current_question_index=0,
+            status="active",
+            agent_path=save_dir
+        )
         
-        interview_sessions[session_id] = session
+        db.add(db_session)
+        db.commit()
+        
+        # Keep agent in memory for current session
+        loaded_agents[session_id] = agent
         
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=500, detail=f"Error creating agent: {str(e)}")
     
     # Return first question (introduction)
@@ -164,26 +173,26 @@ async def start_interview(request: StartInterviewRequest):
     )
 
 @app.get("/interview/{session_id}/question", response_model=QuestionResponse)
-async def get_current_question(session_id: str):
+async def get_current_question(session_id: str, db: Session = Depends(get_db)):
     """
     Get the current question for an interview session
     """
-    if session_id not in interview_sessions:
+    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == session_id).first()
+    
+    if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    session = interview_sessions[session_id]
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail=f"Interview session is {session.status}")
     
-    if session["status"] != "active":
-        raise HTTPException(status_code=400, detail=f"Interview session is {session['status']}")
-    
-    current_index = session["current_question_index"]
-    questions = session["questions"]
+    current_index = session.current_question_index
+    questions = session.questions_data
     
     if current_index >= len(questions):
         raise HTTPException(status_code=400, detail="Interview already completed")
     
     question_data = questions[current_index]
-    question_text = question_data['question'].replace("<participant's name>", session["participant"]["first_name"])
+    question_text = question_data['question'].replace("<participant's name>", session.participant_data["first_name"])
     
     # Check if this is introduction or conclusion
     is_introduction = current_index == 0
@@ -200,20 +209,20 @@ async def get_current_question(session_id: str):
     )
 
 @app.post("/interview/response")
-async def submit_response(request: SubmitResponseRequest):
+async def submit_response(request: SubmitResponseRequest, db: Session = Depends(get_db)):
     """
     Submit a response to the current question and advance to next question
     """
-    if request.session_id not in interview_sessions:
+    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == request.session_id).first()
+    
+    if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    session = interview_sessions[request.session_id]
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail=f"Interview session is {session.status}")
     
-    if session["status"] != "active":
-        raise HTTPException(status_code=400, detail=f"Interview session is {session['status']}")
-    
-    current_index = session["current_question_index"]
-    questions = session["questions"]
+    current_index = session.current_question_index
+    questions = session.questions_data
     
     if current_index >= len(questions):
         raise HTTPException(status_code=400, detail="Interview already completed")
@@ -221,7 +230,7 @@ async def submit_response(request: SubmitResponseRequest):
     # Save the response (skip for introduction)
     if current_index > 0:
         question_data = questions[current_index]
-        question_text = question_data['question'].replace("<participant's name>", session["participant"]["first_name"])
+        question_text = question_data['question'].replace("<participant's name>", session.participant_data["first_name"])
         
         response_record = {
             "question_number": current_index,
@@ -229,32 +238,44 @@ async def submit_response(request: SubmitResponseRequest):
             "response": request.response,
             "timestamp": time.time()
         }
-        session["responses"].append(response_record)
+        
+        # Update responses in database
+        responses = session.responses_data or []
+        responses.append(response_record)
+        session.responses_data = responses
         
         # Update the agent with the new response
         try:
-            agent = session["agent"]
+            # Get agent from memory or load from disk
+            agent = None
+            if request.session_id in loaded_agents:
+                agent = loaded_agents[request.session_id]
+            else:
+                # Load agent from disk
+                agent = GenerativeAgent(session.agent_path)
+                loaded_agents[request.session_id] = agent
+            
             response_text = request.response.strip()
             # Handle empty responses by using a placeholder
             if not response_text:
                 response_text = "N/A"
             
             # Add the response as a memory
-            agent.remember(response_text, time_step=len(session["responses"]))
+            agent.remember(response_text, time_step=len(responses))
             
             # Save the updated agent
-            agent.save(session["agent_path"])
+            agent.save(session.agent_path)
             
             # Save the updated interview data
-            interview_file = os.path.join(session["agent_path"], "interview_data.json")
+            interview_file = os.path.join(session.agent_path, "interview_data.json")
             with open(interview_file, 'w') as f:
                 json.dump({
                     "session_id": request.session_id,
-                    "participant": session["participant"],
-                    "interview_date": session["created_at"],
+                    "participant": session.participant_data,
+                    "interview_date": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
                     "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "responses": session["responses"],
-                    "status": session["status"]
+                    "responses": responses,
+                    "status": session.status
                 }, f, indent=2)
                 
         except Exception as e:
@@ -262,57 +283,67 @@ async def submit_response(request: SubmitResponseRequest):
             print(f"Warning: Failed to update agent: {str(e)}")
     
     # Move to next question
-    session["current_question_index"] += 1
+    session.current_question_index += 1
     
     # Check if interview is complete
-    if session["current_question_index"] >= len(questions):
-        session["status"] = "completed"
+    if session.current_question_index >= len(questions):
+        session.status = "completed"
         
         # Save final interview data
         try:
-            interview_file = os.path.join(session["agent_path"], "interview_data.json")
+            interview_file = os.path.join(session.agent_path, "interview_data.json")
             with open(interview_file, 'w') as f:
                 json.dump({
                     "session_id": request.session_id,
-                    "participant": session["participant"],
-                    "interview_date": session["created_at"],
+                    "participant": session.participant_data,
+                    "interview_date": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
                     "completion_date": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "responses": session["responses"],
+                    "responses": session.responses_data,
                     "status": "completed"
                 }, f, indent=2)
         except Exception as e:
             print(f"Warning: Failed to save final interview data: {str(e)}")
-            
+    
+    # Save changes to database
+    db.commit()
+    
+    if session.status == "completed":
         return {
             "message": "Interview completed",
             "session_id": request.session_id,
-            "total_responses": len(session["responses"]),
+            "total_responses": len(session.responses_data),
             "ready_for_agent_creation": True
         }
     
     # Return next question
-    return await get_current_question(request.session_id)
+    return await get_current_question(request.session_id, db)
 
 @app.post("/interview/{session_id}/finalize", response_model=AgentCreationResponse)
-async def finalize_agent_creation(session_id: str):
+async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)):
     """
     Finalize the agent creation (agent is already created and updated during interview)
     """
-    if session_id not in interview_sessions:
+    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == session_id).first()
+    
+    if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    session = interview_sessions[session_id]
-    
-    if session["status"] != "completed":
+    if session.status != "completed":
         raise HTTPException(status_code=400, detail="Interview must be completed before finalizing agent")
     
     try:
-        # Agent is already created and updated, just finalize
-        agent = session["agent"]
-        agent_path = session["agent_path"]
+        # Load or get agent from memory
+        agent = None
+        if session_id in loaded_agents:
+            agent = loaded_agents[session_id]
+        else:
+            agent = GenerativeAgent(session.agent_path)
+        
+        agent_path = session.agent_path
         
         # Update session status
-        session["status"] = "agent_created"
+        session.status = "agent_created"
+        db.commit()
         
         # Save final agent state
         agent.save(agent_path)
@@ -320,48 +351,51 @@ async def finalize_agent_creation(session_id: str):
         return AgentCreationResponse(
             session_id=session_id,
             agent_path=agent_path,
-            total_responses=len(session["responses"]),
+            total_responses=len(session.responses_data),
             memory_nodes=len(agent.memory_stream.seq_nodes),
             message="Agent successfully finalized from interview responses"
         )
         
     except Exception as e:
-        session["status"] = "error"
+        session.status = "error"
+        db.commit()
         raise HTTPException(status_code=500, detail=f"Error finalizing agent: {str(e)}")
 
 @app.get("/interview/{session_id}", response_model=InterviewSession)
-async def get_interview_session(session_id: str):
+async def get_interview_session(session_id: str, db: Session = Depends(get_db)):
     """
     Get details about an interview session
     """
-    if session_id not in interview_sessions:
-        raise HTTPException(status_code=404, detail="Interview session not found")
+    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == session_id).first()
     
-    session = interview_sessions[session_id]
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not found")
     
     return InterviewSession(
         session_id=session_id,
-        participant=session["participant"],
-        current_question_index=session["current_question_index"],
-        total_questions=len(session["questions"]) - 2,
-        responses=session["responses"],
-        created_at=session["created_at"],
-        status=session["status"]
+        participant=session.participant_data,
+        current_question_index=session.current_question_index,
+        total_questions=len(session.questions_data) - 2,
+        responses=session.responses_data or [],
+        created_at=session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        status=session.status
     )
 
 @app.get("/interview/sessions")
-async def list_interview_sessions():
+async def list_interview_sessions(db: Session = Depends(get_db)):
     """
     List all interview sessions
     """
+    sessions = db.query(DBInterviewSession).all()
+    
     sessions_summary = []
-    for session_id, session in interview_sessions.items():
+    for session in sessions:
         sessions_summary.append({
-            "session_id": session_id,
-            "participant_name": f"{session['participant']['first_name']} {session['participant']['last_name']}",
-            "created_at": session["created_at"],
-            "status": session["status"],
-            "progress": f"{len(session['responses'])}/{len(session['questions']) - 2}"
+            "session_id": session.session_id,
+            "participant_name": f"{session.participant_data['first_name']} {session.participant_data['last_name']}",
+            "created_at": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": session.status,
+            "progress": f"{len(session.responses_data or [])}/{len(session.questions_data) - 2}"
         })
     
     return {"sessions": sessions_summary}
@@ -424,19 +458,18 @@ async def list_created_agents():
         raise HTTPException(status_code=500, detail=f"Error reading agents: {str(e)}")
 
 @app.delete("/interview/{session_id}")
-async def delete_interview_session(session_id: str):
+async def delete_interview_session(session_id: str, db: Session = Depends(get_db)):
     """
     Delete an interview session
     """
-    if session_id not in interview_sessions:
+    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == session_id).first()
+    
+    if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    del interview_sessions[session_id]
+    db.delete(session)
+    db.commit()
     return {"message": "Interview session deleted successfully"}
-
-# In-memory storage for loaded agents and conversation histories
-loaded_agents: Dict[str, GenerativeAgent] = {}
-conversation_histories: Dict[str, List[List[str]]] = {}
 
 @app.get("/agents/{agent_id}")
 async def get_agent_details(agent_id: str):
