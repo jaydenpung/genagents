@@ -5,7 +5,7 @@ Web API for conducting interviews to create generative agents
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from sqlalchemy.orm import Session
 import json
 import time
@@ -34,6 +34,16 @@ init_database()
 # In-memory storage for loaded agents and conversation histories (keep these)
 loaded_agents: Dict[str, GenerativeAgent] = {}
 conversation_histories: Dict[str, List[List[str]]] = {}
+
+# Helper function to safely handle SQLAlchemy column values
+def safe_len(value: Any) -> int:
+    """Safely get length of a value that might be None"""
+    return len(value) if value is not None else 0
+
+# Helper function to get actual values from SQLAlchemy objects
+def get_session_value(session_obj: Any, attr_name: str) -> Any:
+    """Get the actual value from a SQLAlchemy session object"""
+    return getattr(session_obj, attr_name)
 
 class StartInterviewRequest(BaseModel):
     first_name: str
@@ -181,30 +191,30 @@ async def get_current_question(session_id: str, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    if session.status != "active":
+    if session.status != "active":  # type: ignore
         raise HTTPException(status_code=400, detail=f"Interview session is {session.status}")
     
     current_index = session.current_question_index
     questions = session.questions_data
     
-    if current_index >= len(questions):
+    if current_index >= len(questions):  # type: ignore
         raise HTTPException(status_code=400, detail="Interview already completed")
     
     question_data = questions[current_index]
     question_text = question_data['question'].replace("<participant's name>", session.participant_data["first_name"])
     
     # Check if this is introduction or conclusion
-    is_introduction = current_index == 0
-    is_conclusion = current_index == len(questions) - 1
+    is_introduction = current_index == 0  # type: ignore
+    is_conclusion = current_index == len(questions) - 1  # type: ignore
     
     return QuestionResponse(
         session_id=session_id,
-        question_number=current_index,
-        total_questions=len(questions) - 2,
+        question_number=current_index,  # type: ignore
+        total_questions=len(questions) - 2,  # type: ignore
         question=question_text,
-        time_limit=question_data['timeLimit'],
-        is_introduction=is_introduction,
-        is_conclusion=is_conclusion
+        time_limit=question_data['timeLimit'],  # type: ignore
+        is_introduction=is_introduction,  # type: ignore
+        is_conclusion=is_conclusion  # type: ignore
     )
 
 @app.post("/interview/response")
@@ -217,17 +227,17 @@ async def submit_response(request: SubmitResponseRequest, db: Session = Depends(
     if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    if session.status != "active":
+    if session.status != "active":  # type: ignore
         raise HTTPException(status_code=400, detail=f"Interview session is {session.status}")
     
     current_index = session.current_question_index
     questions = session.questions_data
     
-    if current_index >= len(questions):
+    if current_index >= len(questions):  # type: ignore
         raise HTTPException(status_code=400, detail="Interview already completed")
     
     # Save the response (skip for introduction)
-    if current_index > 0:
+    if current_index > 0:  # type: ignore
         question_data = questions[current_index]
         question_text = question_data['question'].replace("<participant's name>", session.participant_data["first_name"])
         
@@ -239,9 +249,9 @@ async def submit_response(request: SubmitResponseRequest, db: Session = Depends(
         }
         
         # Update responses in database
-        responses = session.responses_data or []
+        responses = session.responses_data if session.responses_data is not None else []
         responses.append(response_record)
-        session.responses_data = responses
+        session.responses_data = responses  # type: ignore
         
         # Update the agent with the new response
         try:
@@ -260,7 +270,7 @@ async def submit_response(request: SubmitResponseRequest, db: Session = Depends(
                 response_text = "N/A"
             
             # Add the response as a memory
-            agent.remember(response_text, time_step=len(responses))
+            agent.remember(response_text, time_step=len(responses))  # type: ignore
             
             # Agent updates are stored in memory until finalization
                 
@@ -269,22 +279,22 @@ async def submit_response(request: SubmitResponseRequest, db: Session = Depends(
             print(f"Warning: Failed to update agent: {str(e)}")
     
     # Move to next question
-    session.current_question_index += 1
+    session.current_question_index += 1  # type: ignore
     
     # Check if interview is complete
-    if session.current_question_index >= len(questions):
-        session.status = "completed"
+    if session.current_question_index >= len(questions):  # type: ignore
+        session.status = "completed"  # type: ignore
         
         # All interview data is now stored in the database
     
     # Save changes to database
     db.commit()
     
-    if session.status == "completed":
+    if session.status == "completed":  # type: ignore
         return {
             "message": "Interview completed",
             "session_id": request.session_id,
-            "total_responses": len(session.responses_data),
+            "total_responses": safe_len(session.responses_data),
             "ready_for_agent_creation": True
         }
     
@@ -301,7 +311,7 @@ async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)
     if not session:
         raise HTTPException(status_code=404, detail="Interview session not found")
     
-    if session.status != "completed":
+    if session.status != "completed":  # type: ignore
         raise HTTPException(status_code=400, detail="Interview must be completed before finalizing agent")
     
     try:
@@ -331,43 +341,23 @@ async def finalize_agent_creation(session_id: str, db: Session = Depends(get_db)
         db.add(db_agent)
         
         # Update session status
-        session.status = "agent_created"
+        session.status = "agent_created"  # type: ignore
         db.commit()
         
         # Agent is now stored in database only
         
         return AgentCreationResponse(
             session_id=session_id,
-            agent_path=agent_path,
-            total_responses=len(session.responses_data),
+            agent_path=agent_path,  # type: ignore
+            total_responses=safe_len(session.responses_data),
             memory_nodes=len(agent.memory_stream.seq_nodes),
             message="Agent successfully finalized from interview responses"
         )
         
     except Exception as e:
-        session.status = "error"
+        session.status = "error"  # type: ignore
         db.commit()
         raise HTTPException(status_code=500, detail=f"Error finalizing agent: {str(e)}")
-
-@app.get("/interview/{session_id}", response_model=InterviewSession)
-async def get_interview_session(session_id: str, db: Session = Depends(get_db)):
-    """
-    Get details about an interview session
-    """
-    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == session_id).first()
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Interview session not found")
-    
-    return InterviewSession(
-        session_id=session_id,
-        participant=session.participant_data,
-        current_question_index=session.current_question_index,
-        total_questions=len(session.questions_data) - 2,
-        responses=session.responses_data or [],
-        created_at=session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-        status=session.status
-    )
 
 @app.get("/interview/sessions")
 async def list_interview_sessions(db: Session = Depends(get_db)):
@@ -383,10 +373,30 @@ async def list_interview_sessions(db: Session = Depends(get_db)):
             "participant_name": f"{session.participant_data['first_name']} {session.participant_data['last_name']}",
             "created_at": session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
             "status": session.status,
-            "progress": f"{len(session.responses_data or [])}/{len(session.questions_data) - 2}"
+            "progress": f"{safe_len(session.responses_data)}/{len(session.questions_data) - 2}"  # type: ignore
         })
     
     return {"sessions": sessions_summary}
+
+@app.get("/interview/{session_id}", response_model=InterviewSession)
+async def get_interview_session(session_id: str, db: Session = Depends(get_db)):
+    """
+    Get details about an interview session
+    """
+    session = db.query(DBInterviewSession).filter(DBInterviewSession.session_id == session_id).first()
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not found")
+    
+    return InterviewSession(
+        session_id=session_id,
+        participant=session.participant_data,  # type: ignore
+        current_question_index=session.current_question_index,  # type: ignore
+        total_questions=len(session.questions_data) - 2,  # type: ignore
+        responses=session.responses_data if session.responses_data is not None else [],  # type: ignore
+        created_at=session.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        status=session.status  # type: ignore
+    )
 
 @app.get("/agents")
 async def list_created_agents(db: Session = Depends(get_db)):
@@ -473,7 +483,7 @@ async def chat_with_agent(agent_id: str, request: ChatRequest, db: Session = Dep
             
             # Reconstruct memory stream
             memory_data = db_agent.memory_stream
-            if memory_data and 'nodes' in memory_data and 'embeddings' in memory_data:
+            if memory_data and 'nodes' in memory_data and 'embeddings' in memory_data:  # type: ignore
                 # Import the proper ConceptNode class
                 from genagents.modules.memory_stream import ConceptNode
                 
@@ -526,7 +536,7 @@ async def chat_with_agent(agent_id: str, request: ChatRequest, db: Session = Dep
             else:
                 # Fallback: create a simple response based on agent's memories
                 response = f"As {agent_name}, I remember my experiences from the interview. You said: '{request.message}'. Based on what I shared during my interview, I think..."
-                conversation_histories[agent_id].append([agent_name, response])
+                conversation_histories[agent_id].append([agent_name, response])  # type: ignore
         except Exception as e:
             print(f"Error generating utterance: {str(e)}")
             print(f"Error type: {type(e)}")
@@ -534,11 +544,11 @@ async def chat_with_agent(agent_id: str, request: ChatRequest, db: Session = Dep
             print(f"Traceback: {traceback.format_exc()}")
             # Another fallback
             response = f"I understand you said: '{request.message}'. Let me think about that based on my experiences..."
-            conversation_histories[agent_id].append([agent_name, response])
+            conversation_histories[agent_id].append([agent_name, response])  # type: ignore
         
         return ChatResponse(
             agent_id=agent_id,
-            agent_name=agent_name,
+            agent_name=agent_name,  # type: ignore
             response=response,
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S")
         )
